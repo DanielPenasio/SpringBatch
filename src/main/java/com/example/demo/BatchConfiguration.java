@@ -9,20 +9,16 @@ import org.springframework.batch.core.configuration.annotation.EnableBatchProces
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
-import org.springframework.batch.item.database.BeanPropertyItemSqlParameterSourceProvider;
-import org.springframework.batch.item.database.JdbcBatchItemWriter;
+import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.database.JdbcCursorItemReader;
-import org.springframework.batch.item.database.builder.JdbcBatchItemWriterBuilder;
 import org.springframework.batch.item.database.builder.JdbcCursorItemReaderBuilder;
-import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.FlatFileItemWriter;
-import org.springframework.batch.item.file.builder.FlatFileItemReaderBuilder;
 import org.springframework.batch.item.file.builder.FlatFileItemWriterBuilder;
-import org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper;
 import org.springframework.batch.item.file.transform.BeanWrapperFieldExtractor;
 import org.springframework.batch.item.file.transform.DelimitedLineAggregator;
-import org.springframework.batch.item.file.transform.LineAggregator;
+import org.springframework.batch.item.support.ClassifierCompositeItemWriter;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.classify.Classifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
@@ -40,6 +36,21 @@ public class BatchConfiguration extends DefaultBatchConfigurer{
 	
 	@Autowired
 	public DataSource dataSource;
+	
+//	@Autowired
+//	public JobLauncher jobLauncher;
+	
+//	@Scheduled(fixedDelay = 5000)
+//	public void perform() throws JobExecutionAlreadyRunningException, JobRestartException, JobInstanceAlreadyCompleteException, JobParametersInvalidException {
+//		System.out.println("Job Started at :" + new Date());
+//
+//		JobParameters param = new JobParametersBuilder().addString("JobID", String.valueOf(System.currentTimeMillis()))
+//				.toJobParameters();
+//
+//		JobExecution execution = jobLauncher.run(exportModel(), param);
+//
+//		System.out.println("Job finished with status :" + execution.getStatus());
+//	}
 	
 	@Bean
 	public DataSource dataSource() {
@@ -71,7 +82,7 @@ public class BatchConfiguration extends DefaultBatchConfigurer{
 	public JdbcCursorItemReader<Model> reader() {
 		return new JdbcCursorItemReaderBuilder<Model>()
 				.name("JdbcCursorItemReader")
-				.sql("SELECT status, origem, destino FROM model")
+				.sql("SELECT id, status, origem, destino FROM model")
 				.dataSource(dataSource)
 				.rowMapper(new ModelRowMapper())
 				.build();
@@ -94,26 +105,56 @@ public class BatchConfiguration extends DefaultBatchConfigurer{
 //	}
 	
 	@Bean
-	public FlatFileItemWriter<Model> writer() {
+	public ClassifierCompositeItemWriter<Model> classifierCompositeItemWriter(ItemWriter<Model> saidaWriter, ItemWriter<Model> outWriter){
+		
+		ClassifierCompositeItemWriter<Model> classifierCompositeItemWriter = new ClassifierCompositeItemWriter<>();
+		Classifier<Model, ItemWriter<? super Model>> classifier = m -> {
+			if(m.getStatus().equals("1")) {
+				return saidaWriter;
+			}else {
+				return outWriter;
+			}
+		};
+		
+		classifierCompositeItemWriter.setClassifier(classifier);
+		return classifierCompositeItemWriter;
+		
+	}
+	
+	@Bean
+	public FlatFileItemWriter<Model> saidaWriter() {
 		return new FlatFileItemWriterBuilder<Model>()
 				.name("FlatFileItemWriter")
 				.resource(new ClassPathResource("saida.txt"))
 				.lineAggregator(new DelimitedLineAggregator<Model>() {{
 					setDelimiter(",");
 					setFieldExtractor(new BeanWrapperFieldExtractor<Model>() {{
-						setNames(new String[] {"status","origem","destino"});
+						setNames(new String[] {"id","status","origem","destino"});
 					}});
 				}})
 				.build();
 	}
 	
+	@Bean
+	public FlatFileItemWriter<Model> outWriter() {
+		return new FlatFileItemWriterBuilder<Model>()
+				.name("FlatFileItemWriter")
+				.resource(new ClassPathResource("out.txt"))
+				.lineAggregator(new DelimitedLineAggregator<Model>() {{
+					setDelimiter(",");
+					setFieldExtractor(new BeanWrapperFieldExtractor<Model>() {{
+						setNames(new String[] {"id","status","origem","destino"});
+					}});
+				}})
+				.build();
+	}
 	
 	@Bean
 	public Job exportModel() {
 		return jobBuilderFactory.get("exportModel")
 				.incrementer(new RunIdIncrementer())
-				.flow(step1())
-				.end()
+				.start(step1())
+//				.end()
 				.build();
 				
 	}
@@ -124,7 +165,11 @@ public class BatchConfiguration extends DefaultBatchConfigurer{
 				.<Model,Model> chunk(10)
 				.reader(reader())
 				.processor(processor())
-				.writer(writer())
+				.writer(classifierCompositeItemWriter(saidaWriter(), outWriter()))
+				.stream(saidaWriter())
+				.stream(outWriter())
 				.build();
 	}
+	
+	
 }
